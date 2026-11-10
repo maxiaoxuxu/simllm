@@ -34,6 +34,7 @@ Trace-calibrated：会用指令级 trace 做模拟。
 
 
 它们和“GPU 模型”的关系
+
 可以把它们看成三层：
 
 GpuArchitectureProfile / GpuCalibrationProfile：描述 GPU 的结构和服务参数，例如 SM、warp、寄存器、pipeline、HBM、copy engine；trace 模拟会用这些参数。
@@ -44,7 +45,9 @@ ProfileTableProvider：保存可供运行时快速查询的 kernel 时间表。�
 
 默认用哪一种？ vLLM 适配器默认创建 RooflineProvider，所以普通配置不是在执行指令级 GPU 模拟。Profile table 或 trace provider 要作为计算 provider 注入；仓库提供 configure(...) 这类 Python 注入入口，但在 vllm serve 这种 engine 独立进程的模式下，文档要求不能假设主进程里的对象注入会自动传过去，通常要用适配的进程内集成或 sink/配置路径。在线 step loop 使用的是 provider 接口；trace 的解析和 replay 属于离线准备，不是每个 serving step 都重新跑一遍。
 
-一句话：Roofline 算工作量，profile table 查已校准的时间，trace-calibrated 才按指令 trace 和硬件参数重放。三者都能接到 compute provider 接口，但精度、输入和支持范围不同。
+一句话：
+
+Roofline 算工作量，profile table 查已校准的时间，trace-calibrated 才按指令 trace 和硬件参数重放。三者都能接到 compute provider 接口，但精度、输入和支持范围不同。
 
 
 
@@ -68,7 +71,9 @@ TraceCalibratedGpuProvider	   GpuArchitectureProfile，其中嵌套 GpuCalibrati
 RooflineProvider 本身不模拟 NCCL 通信。它只估算每个 rank 上的模型计算工作；NCCL collective 是另一条建模路径，按 rank、消息大小、通信算法和拓扑来估算。一个 step 的总时间由计算和通信等部分组合起来。
 
 
+
 自研 GPU 能不能用？
+
 可以从简化方案开始，但不能直接把 NVIDIA 参数当成自研 GPU 参数。
 
 粗略估算：用自研卡实测或可信规格填写峰值算力、HBM 带宽和效率，再通过 GpuSpec + RooflineProvider 估算 kernel 时间。GpuSpec 是通用的名称、峰值 FLOP/s 和内存带宽结构，ComputeProvider 也有统一接口。
