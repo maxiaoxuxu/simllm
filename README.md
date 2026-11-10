@@ -67,6 +67,18 @@ TraceCalibratedGpuProvider	   GpuArchitectureProfile，其中嵌套 GpuCalibrati
 ```
 RooflineProvider 本身不模拟 NCCL 通信。它只估算每个 rank 上的模型计算工作；NCCL collective 是另一条建模路径，按 rank、消息大小、通信算法和拓扑来估算。一个 step 的总时间由计算和通信等部分组合起来。
 
+
+自研 GPU 能不能用？
+可以从简化方案开始，但不能直接把 NVIDIA 参数当成自研 GPU 参数。
+
+粗略估算：用自研卡实测或可信规格填写峰值算力、HBM 带宽和效率，再通过 GpuSpec + RooflineProvider 估算 kernel 时间。GpuSpec 是通用的名称、峰值 FLOP/s 和内存带宽结构，ComputeProvider 也有统一接口。
+但目前 vLLM/SGLang 的环境变量解析会先查内置 GPU_ENVELOPES；只设置 SIMLLM_VLLM_GPU=mychip 并不会自动注册新型号。通过 Python API 注入自定义 GpuSpec/provider 可用于同进程运行；要从适配器配置中直接选择，则需扩展或注册对应 profile。适配器文档指出，configure(...) 这类对象注入适用于 engine 和 SimLLM 在同一进程的情形；分进程的 vllm serve 主要依赖环境变量和文件输入。
+更细的 trace 模型：目前的 SmSchedulerModel 使用已归一化的指令 trace，模拟 CTA 占用、warp 调度、pipeline、HBM 等服务；指令还需要映射到模型中的 opcode/pipeline。模型对 SASS trace 有明确边界，不支持的指令或机制会拒绝，不能把自研 ISA 硬映射成 NVIDIA SASS 后就认为结果可信。见 compute 模型说明。
+设备和互连：需要按自研 GPU 的真实架构定义调度、存储、DMA/拷贝引擎和 peer-link 参数，并用自研卡上的实测数据校准。现有 GpuArchitectureProfile、GpuCalibrationProfile、GpuModelArtifact 提供了一部分结构和证据承载形式，但它们不会自动建出一种新的 ISA、调度器或互连模型。
+校准状态：自研卡的架构推导或少量样本适合先作为 candidate；要称为 validated，需要目标卡上的捕获、实测和验证。仓库设计明确区分 architecture-derived candidate 与基于目标硅片证据的模型。见 离线设备校准设计。
+所以，自研 GPU 先跑起来的最小方案是提供该卡的 GpuSpec，使用 roofline 估算；如果想让性能结果有说服力，再补完整的设备参数、指令/trace 适配、拷贝和互连模型，以及目标卡实测校准。
+
+
 拓扑怎么来？
 有两种主要方式：
 
