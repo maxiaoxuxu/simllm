@@ -85,6 +85,7 @@ RooflineProvider 本身不模拟 NCCL 通信。它只估算每个 rank 上的模
 
 
 拓扑怎么来？
+
 有两种主要方式：
 
 声明式生成（what-if）：按并行配置生成 rank 和 rank group。例如 declared_manifest(tp=..., pp=..., dp=..., nodes=..., gpus_per_node=...) 会按布局规则生成 rank；再配合 fabric manifest 描述 GPU、NIC、交换机和链路。适合试算“假设有多少卡、怎样放置”。
@@ -100,6 +101,7 @@ NCCL 通信具体模拟到什么程度？
 另外，TP/EP 等 rank group 的通信流量，以及跨节点的网络传输，由 placement、traffic 和 htsim/ATLAHS 后端等模块负责；它们不是 RooflineProvider 算出来的。
 
 最大支持多少张卡？
+
 没有一个适用于所有路径的统一“最多 N 张 GPU”上限；但有各自的支持边界。
 
 Placement 的声明式接口根据 TP/PP/DP 和节点参数生成 world size，并检查布局是否合法。
