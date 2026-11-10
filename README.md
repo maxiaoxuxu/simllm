@@ -16,6 +16,57 @@ Network-faithful simulation of LLM serving and training deployments
 <img src="resources/figures/simllm-overview.png" width="58%" alt="SimLLM pipeline: a workload model feeds the real vLLM or SGLang scheduler, which drives a simulated GPU executor and a packet-level htsim network, producing TTFT, TPOT and goodput on a virtual clock, with step completions closing the loop back to the scheduler">
 </p>
 
+## AI分析
+三种计算方式
+
+Roofline：按 FLOPs 和字节数估时，不需要指令。
+vLLM/SGLang 适配器读取模型维度和调度器的 step 信息，计算出一个 KernelSpec：主要包含 FLOPs、数据量和形状。接着 roofline 用峰值算力和内存带宽估时，取计算时间与搬运数据时间中较大的一项。代码会把一步工作拆成 attention、MLP、LM head、KV 读取等 family；这些是工作量分类，不是 GPU 机器指令。
+见 step_kernel / step_kernels 和 RooflineProvider。
+
+Profile table：按 kernel 与形状查时间，也不需要在线读指令。
+它是一张以 (kernel, config, GPU) 为键的耗时表，通常保存实机测量值，也可以来自离线模拟。运行时匹配表项，返回时长和不确定度；只支持受限的一维插值，超出覆盖范围会报错，不会随意猜。
+见 ProfileTableProvider。
+
+Trace-calibrated：会用指令级 trace 做模拟。
+它把 kernel 的 CTA/warp 指令 trace 和 GPU 架构参数交给 SmSchedulerModel，按模型里的资源规则模拟 CTA 能否驻留、warp 何时可发射、指令依赖和 pipeline 服务，再估计周期数。这里的 SassInstruction 是供模型重放的归一化指令记录，不是拿 CUDA 程序在模拟器里重新编译执行；它也只支持定义好的机制子集，遇到不支持的行为会拒绝。
+见 SmSchedulerModel 和 trace-driven GPU service 设计说明。
+
+
+
+它们和“GPU 模型”的关系
+可以把它们看成三层：
+
+GpuArchitectureProfile / GpuCalibrationProfile：描述 GPU 的结构和服务参数，例如 SM、warp、寄存器、pipeline、HBM、copy engine；trace 模拟会用这些参数。
+TraceCalibratedGpuProvider：离线用上述硬件模型和指令 trace 计算 kernel 时间。
+ProfileTableProvider：保存可供运行时快速查询的 kernel 时间表。表格可以来自实机测量，也可以由经过验证的 trace replay 编译而来。
+仓库的 GpuModelArtifact 能把架构、capture 环境、kernel/trace 身份、重放结果和实机测量放在同一份可验证 artifact 里；随后可调用 gpu_model_artifact_to_profile_table 编译成较小的 profile table。
+见 GpuModelArtifact 和 artifact 到 profile table 的转换。
+
+默认用哪一种？ vLLM 适配器默认创建 RooflineProvider，所以普通配置不是在执行指令级 GPU 模拟。Profile table 或 trace provider 要作为计算 provider 注入；仓库提供 configure(...) 这类 Python 注入入口，但在 vllm serve 这种 engine 独立进程的模式下，文档要求不能假设主进程里的对象注入会自动传过去，通常要用适配的进程内集成或 sink/配置路径。在线 step loop 使用的是 provider 接口；trace 的解析和 replay 属于离线准备，不是每个 serving step 都重新跑一遍。
+
+一句话：Roofline 算工作量，profile table 查已校准的时间，trace-calibrated 才按指令 trace 和硬件参数重放。三者都能接到 compute provider 接口，但精度、输入和支持范围不同。
+
+
+
+
+
+按三种计算路径区分：GpuArchitectureProfile / GpuCalibrationProfile 只有 trace-calibrated 路径必需。 Roofline 用的是更简单的 GpuSpec；Profile table 在线查表也不需要这两个 profile。
+
+```
+
+计算路径                           必需的 GPU 输入	                           是否需要 GpuArchitectureProfile / GpuCalibrationProfile
+
+
+RooflineProvider	             GpuSpec：GPU 名称、峰值 FLOP/s、HBM 带宽；以及 kernel 的 FLOPs、字节数	           不需要
+
+
+ProfileTableProvider	         已有的耗时表；查询键是 kernel 名、形状配置、GPU 名	                                在线查询不需要
+
+
+TraceCalibratedGpuProvider	   GpuArchitectureProfile，其中嵌套 GpuCalibrationProfile；以及 kernel 的 KernelLaunch / 指令 trace	 需要
+```
+
+
 ## About
 
 SimLLM predicts the serving performance (TTFT, TPOT, goodput, SLO
