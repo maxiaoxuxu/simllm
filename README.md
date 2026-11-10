@@ -65,7 +65,35 @@ ProfileTableProvider	         已有的耗时表；查询键是 kernel 名、形
 
 TraceCalibratedGpuProvider	   GpuArchitectureProfile，其中嵌套 GpuCalibrationProfile；以及 kernel 的 KernelLaunch / 指令 trace	 需要
 ```
+RooflineProvider 本身不模拟 NCCL 通信。它只估算每个 rank 上的模型计算工作；NCCL collective 是另一条建模路径，按 rank、消息大小、通信算法和拓扑来估算。一个 step 的总时间由计算和通信等部分组合起来。
 
+拓扑怎么来？
+有两种主要方式：
+
+声明式生成（what-if）：按并行配置生成 rank 和 rank group。例如 declared_manifest(tp=..., pp=..., dp=..., nodes=..., gpus_per_node=...) 会按布局规则生成 rank；再配合 fabric manifest 描述 GPU、NIC、交换机和链路。适合试算“假设有多少卡、怎样放置”。
+参考：Placement 模块文档
+
+从真实系统采集：导入 NCCL topology dump，结合设备清单，把真实节点上的 GPU/NIC/NVLink 连接映射成 manifest。适合重现已知机器；当前采集器只接受它能严格识别的拓扑形状，碰到不匹配的结构会拒绝，而不是猜。
+参考：Placement 模块文档
+
+NCCL 通信具体模拟到什么程度？
+目前的 NCCL ring all-reduce GPU kernel 模型主要覆盖每 GPU 的出口部分：按消息大小、world size、channel、chunk 等生成 HBM 读取和 NVLink 写出的 trace，并可与该 GPU 上的计算/内存任务竞争。它不是完整复刻 NCCL，也没有在这条模型里覆盖所有 ingress、归约、proxy 和逐链路细节。
+参考：NCCL kernel builder、当前模型边界
+
+另外，TP/EP 等 rank group 的通信流量，以及跨节点的网络传输，由 placement、traffic 和 htsim/ATLAHS 后端等模块负责；它们不是 RooflineProvider 算出来的。
+
+最大支持多少张卡？
+没有一个适用于所有路径的统一“最多 N 张 GPU”上限；但有各自的支持边界。
+
+Placement 的声明式接口根据 TP/PP/DP 和节点参数生成 world size，并检查布局是否合法。
+某些预设拓扑有限定。例如 README 中的 disaggregated 物理 Clos 拓扑要求每节点 8 张 GPU；仓库有一个 448 rank 的目标部署示例。它是一个已描述的目标规模，不等于代码保证最多只支持 448 张。
+参考：disaggregated placement 文档、目标部署示例
+参考：分散式部署文档、目标部署示例
+NCCL ring trace builder 要求 world_size >= 2，且消息大小能按 world size、channels、warps 和 chunk 切分；不满足就会报错。它没有在该接口中声明一个通用的最大 world size。
+参考：参数检查与切分条件
+vLLM SimExecutor 当前不支持 PP>1，所以不能把“placement 能描述某布局”直接理解为“vLLM 模拟器已经支持该布局的全部执行路径”。
+参考：SimExecutor 对 PP 的限制
+因此，若你问的是做多卡规模规划，可以声明多 rank 拓扑并模拟支持范围内的通信；若你问的是运行真实多卡 NCCL benchmark，这不是 Roofline 或 SimExecutor 在虚拟 GPU 上做的事，需要在真实多卡机器上实测，再把测量用于校准。
 
 ## About
 
